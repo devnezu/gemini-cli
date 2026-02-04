@@ -740,6 +740,16 @@ export async function main() {
 
     initializeOutputListenersAndFlush();
 
+    try {
+      const info = await checkForUpdates(settings);
+      handleAutoUpdate(info, settings, config.getProjectRoot());
+    } catch (err) {
+      // Silently ignore update check errors.
+      if (config.getDebugMode()) {
+        debugLogger.warn('Update check failed:', err);
+      }
+    }
+
     await runNonInteractive({
       config,
       settings,

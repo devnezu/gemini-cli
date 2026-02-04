@@ -108,6 +108,7 @@ vi.mock('fs', async (importOriginal) => {
     writeFileSync: vi.fn(),
     mkdirSync: vi.fn(),
     realpathSync: vi.fn((p: string) => p),
+    accessSync: vi.fn(),
   };
 });
 
@@ -2123,6 +2124,42 @@ describe('Settings Loading and Merging', () => {
 
       // Merged should also reflect it (system overrides defaults, but both are migrated)
       expect(settings.merged.general?.enableAutoUpdateNotification).toBe(false);
+    });
+
+    it('should NOT migrate if the settings directory is read-only', () => {
+      vi.mocked(fs.accessSync).mockImplementation(() => {
+        throw new Error('Read-only filesystem');
+      });
+
+      const systemSettings: Settings = {
+        general: {
+          disableUpdateNag: true,
+        },
+      } as TestSettings;
+
+      const loadedSettings = new LoadedSettings(
+        {
+          path: '/mock/system/settings.json',
+          settings: systemSettings,
+          originalSettings: structuredClone(systemSettings),
+        },
+        { path: '', settings: {}, originalSettings: {} },
+        { path: '', settings: {}, originalSettings: {} },
+        { path: '', settings: {}, originalSettings: {} },
+        true,
+        [],
+      );
+
+      const modified = migrateDeprecatedSettings(loadedSettings);
+
+      expect(modified).toBe(false);
+      expect(loadedSettings.system.settings.general).not.toHaveProperty(
+        'enableAutoUpdateNotification',
+      );
+      expect(loadedSettings.system.settings.general).toHaveProperty(
+        'disableUpdateNag',
+        true,
+      );
     });
 
     it('should migrate experimental agent settings to agents overrides', () => {

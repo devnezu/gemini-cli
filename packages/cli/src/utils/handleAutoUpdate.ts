@@ -12,6 +12,10 @@ import type { HistoryItem } from '../ui/types.js';
 import { MessageType } from '../ui/types.js';
 import { spawnWrapper } from './spawnWrapper.js';
 import type { spawn } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import commandExists from 'command-exists';
+import { debugLogger } from '@google/gemini-cli-core';
 
 export function handleAutoUpdate(
   info: UpdateObject | null,
@@ -62,12 +66,29 @@ export function handleAutoUpdate(
   ) {
     return;
   }
+
+  // Pre-flight check: Verify write permissions for the executable's directory
+  const cliPath = process.argv[1];
+  if (cliPath) {
+    try {
+      const realCliPath = fs.realpathSync(cliPath);
+      const cliDir = path.dirname(realCliPath);
+      fs.accessSync(cliDir, fs.constants.W_OK);
+    } catch (err) {
+      debugLogger.warn(
+        `Pre-flight update check failed: No write permission to ${cliPath}. Error: ${err}`,
+      );
+      return;
+    }
+  }
+
   const isNightly = info.update.latest.includes('nightly');
 
   const updateCommand = installationInfo.updateCommand.replace(
     '@latest',
     isNightly ? '@nightly' : `@${info.update.latest}`,
   );
+
   const updateProcess = spawnFn(updateCommand, {
     stdio: 'ignore',
     shell: true,
@@ -78,6 +99,17 @@ export function handleAutoUpdate(
 
   updateProcess.on('close', (code) => {
     if (code === 0) {
+      // Post-update verification: check if 'gemini' is still resolvable in PATH
+      const verifyCommand = 'gemini';
+      if (!commandExists.sync(verifyCommand)) {
+        const msg = `Automatic update failed: the "${verifyCommand}" command is no longer resolvable in your PATH. Please try a manual reinstall: ${installationInfo.updateCommand}`;
+        debugLogger.error('Post-update verification failed:', msg);
+        updateEventEmitter.emit('update-failed', {
+          message: msg,
+        });
+        return;
+      }
+
       updateEventEmitter.emit('update-success', {
         message:
           'Update successful! The new version will be used on your next run.',
@@ -119,12 +151,14 @@ export function setUpdateHandler(
     }, 60000);
   };
 
-  const handleUpdateFailed = () => {
+  const handleUpdateFailed = (data?: { message?: string }) => {
     setUpdateInfo(null);
+    const text =
+      data?.message || 'Automatic update failed. Please try updating manually';
     addItem(
       {
         type: MessageType.ERROR,
-        text: `Automatic update failed. Please try updating manually`,
+        text,
       },
       Date.now(),
     );

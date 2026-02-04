@@ -23,6 +23,18 @@ vi.mock('./installationInfo.js', async () => {
   };
 });
 
+vi.mock('node:fs', () => ({
+  realpathSync: vi.fn((p) => p),
+  accessSync: vi.fn(),
+  constants: { W_OK: 2 },
+}));
+
+vi.mock('command-exists', () => ({
+  default: {
+    sync: vi.fn().mockReturnValue(true),
+  },
+}));
+
 vi.mock('./updateEventEmitter.js', async (importOriginal) =>
   importOriginal<typeof import('./updateEventEmitter.js')>(),
 );
@@ -230,7 +242,7 @@ describe('handleAutoUpdate', () => {
     });
   });
 
-  it('should use the "@nightly" tag for nightly updates', async () => {
+  it('should attempt to update for nightly updates', async () => {
     mockUpdateInfo = {
       ...mockUpdateInfo,
       update: {
@@ -279,6 +291,51 @@ describe('handleAutoUpdate', () => {
       message:
         'Update successful! The new version will be used on your next run.',
     });
+  });
+
+  it('should emit "update-failed" when the post-update verification fails', async () => {
+    const commandExists = (await import('command-exists')).default;
+    vi.mocked(commandExists.sync).mockReturnValue(false);
+
+    await new Promise<void>((resolve) => {
+      mockGetInstallationInfo.mockReturnValue({
+        updateCommand: 'npm i -g @google/gemini-cli@latest',
+        updateMessage: 'This is an additional message.',
+        isGlobal: false,
+        packageManager: PackageManager.NPM,
+      });
+
+      // Simulate successful execution but verification fails
+      setTimeout(() => {
+        mockChildProcess.emit('close', 0);
+        resolve();
+      }, 0);
+
+      handleAutoUpdate(mockUpdateInfo, mockSettings, '/root', mockSpawn);
+    });
+
+    expect(updateEventEmitter.emit).toHaveBeenCalledWith('update-failed', {
+      message:
+        'Automatic update failed: the "gemini" command is no longer resolvable in your PATH. Please try a manual reinstall: npm i -g @google/gemini-cli@latest',
+    });
+  });
+
+  it('should not proceed if pre-flight write check fails', async () => {
+    const fs = await import('node:fs');
+    vi.mocked(fs.accessSync).mockImplementation(() => {
+      throw new Error('No permission');
+    });
+
+    mockGetInstallationInfo.mockReturnValue({
+      updateCommand: 'npm i -g @google/gemini-cli@latest',
+      updateMessage: '',
+      isGlobal: true,
+      packageManager: PackageManager.NPM,
+    });
+
+    handleAutoUpdate(mockUpdateInfo, mockSettings, '/root', mockSpawn);
+
+    expect(mockSpawn).not.toHaveBeenCalled();
   });
 });
 
@@ -336,13 +393,13 @@ describe('setUpdateHandler', () => {
   });
 
   it('should handle update-failed event', () => {
-    updateEventEmitter.emit('update-failed', { message: 'Failed' });
+    updateEventEmitter.emit('update-failed', { message: 'Failed message' });
 
     expect(setUpdateInfo).toHaveBeenCalledWith(null);
     expect(addItem).toHaveBeenCalledWith(
       {
         type: MessageType.ERROR,
-        text: 'Automatic update failed. Please try updating manually',
+        text: 'Failed message',
       },
       expect.any(Number),
     );

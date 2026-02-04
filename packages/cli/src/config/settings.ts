@@ -785,7 +785,22 @@ export function migrateDeprecatedSettings(
   };
 
   const processScope = (scope: LoadableSettingScope) => {
-    const settings = loadedSettings.forScope(scope).settings;
+    const settingsFile = loadedSettings.forScope(scope);
+
+    // Skip migration if the settings file is read-only.
+    try {
+      const dirPath = path.dirname(settingsFile.path);
+      if (fs.existsSync(dirPath)) {
+        fs.accessSync(dirPath, fs.constants.W_OK);
+      } else {
+        fs.accessSync(path.dirname(dirPath), fs.constants.W_OK);
+      }
+    } catch (_e) {
+      // Not writable, skip migration for this scope.
+      return;
+    }
+
+    const settings = settingsFile.settings;
 
     // Migrate general settings
     const generalSettings = settings.general as
@@ -883,6 +898,22 @@ export function saveSettings(settingsFile: SettingsFile): void {
   try {
     // Ensure the directory exists
     const dirPath = path.dirname(settingsFile.path);
+
+    // Check if the directory is writable. If not, we skip saving and avoid
+    // showing a generic error message to the user, as some settings files
+    // (like system defaults) are intended to be read-only in certain environments.
+    try {
+      if (fs.existsSync(dirPath)) {
+        fs.accessSync(dirPath, fs.constants.W_OK);
+      } else {
+        // If it doesn't exist, check the parent directory
+        fs.accessSync(path.dirname(dirPath), fs.constants.W_OK);
+      }
+    } catch (_e) {
+      // Not writable, skip saving silently.
+      return;
+    }
+
     if (!fs.existsSync(dirPath)) {
       fs.mkdirSync(dirPath, { recursive: true });
     }
